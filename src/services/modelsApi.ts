@@ -3,7 +3,7 @@
  * 支持缓存与定时刷新
  */
 
-const MODELS_API_URL = 'https://api.supioc.com/v1/models';
+const MODELS_API_URL = '/api/v1/models';
 
 /** 接口返回的单个模型项 */
 export interface ApiModelItem {
