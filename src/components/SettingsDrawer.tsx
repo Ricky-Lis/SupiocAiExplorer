@@ -95,10 +95,8 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({ isOpen, onClose,
       const headers = new Headers();
       headers.append('new-api-user', userId);
       headers.append('Authorization', systemToken);
-      // 开发环境走 Vite 代理，避免 CORS；生产环境直连（若遇 CORS 需服务端配置或自建代理）
-      const tokenUrl = import.meta.env.DEV
-        ? '/api-proxy/api/token/?p=0&size=10'
-        : 'https://api.supioc.com/api/token/?p=0&size=10';
+      // 统一走同源 /api，开发环境由 Vite 代理，生产环境由服务器反向代理
+      const tokenUrl = '/api/token/?p=0&size=10';
       const res = await fetch(tokenUrl, {
         method: 'GET',
         headers,
