@@ -8,6 +8,7 @@ import { VideoPage } from './components/Video';
 import { Agent } from './components/Agent';
 import { PageType, Settings } from './types';
 import { motion, AnimatePresence } from 'motion/react';
+import { Toaster } from 'sonner';
 
 export default function App() {
   const [activePage, setActivePage] = useState<PageType>('home');
@@ -67,6 +68,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen transition-colors duration-300 overflow-hidden font-sans bg-zinc-50 dark:bg-zinc-950 relative">
+      <Toaster position="top-center" richColors />
       <Sidebar 
         activePage={activePage} 
         setActivePage={setActivePage} 

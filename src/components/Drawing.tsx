@@ -1,15 +1,18 @@
 import React, { useState, useCallback, useRef, useEffect, useContext, createContext } from 'react';
 import { 
   Image as ImageIcon, Download, Loader2, Sparkles, ArrowLeft, 
-  Palette, ImagePlus, Wand2, Package, Upload, History, Info, ChevronRight, X, Plus, Settings, Play, Square
+  Palette, ImagePlus, Wand2, Package, Upload, History, Info, ChevronRight, X, Plus, Settings, Play, Square,
+  Eye
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateGeminiImage } from '../services/imageGenApi';
 import { ReactFlow, Background, Controls, addEdge, Handle, Position, useNodesState, useEdgesState, Connection, Edge, useReactFlow, SelectionMode } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { toast } from 'sonner';
 
 const FlowContext = createContext<{
   runNode: (id: string) => void;
+  onPreview: (src: string) => void;
 } | null>(null);
 
 /** 自定义绘图固定模型（展示名 → Gemini 模型 ID） */
@@ -24,6 +27,43 @@ type CustomDrawResolution = '1K' | '2K' | '4K';
 const getCustomDrawModelLabel = (modelId?: string) => {
   if (!modelId) return '';
   return CUSTOM_DRAW_IMAGE_MODELS.find((m) => m.id === modelId)?.label ?? modelId;
+};
+
+/** 生成缩略图辅助函数 */
+const generateThumbnail = (dataUrl: string, maxWidth = 800, maxHeight = 800): Promise<string> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height *= maxWidth / width;
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width *= maxHeight / height;
+          height = maxHeight;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, width, height);
+      }
+      // 使用 webp 格式以获得更好的清晰度和透明度支持，质量提升至 0.85
+      resolve(canvas.toDataURL('image/webp', 0.85));
+    };
+    img.onerror = () => resolve(dataUrl); // 失败则返回原图
+    img.src = dataUrl;
+  });
 };
 
 const CustomDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = ({ apiKey, onBack }) => {
@@ -50,7 +90,7 @@ const CustomDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = ({ apiK
       setImage(result.dataUrl);
     } catch (error) {
       console.error(error);
-      alert('生成失败，请检查 API Key 或网络。');
+      toast.error('生成失败，请检查 API Key 或网络。');
     } finally {
       setIsLoading(false);
     }
@@ -201,12 +241,16 @@ const CustomDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = ({ apiK
 
 const ImageNode = ({ id, data }: any) => {
   const { setNodes, deleteElements } = useReactFlow();
+  const flowContext = useContext(FlowContext);
+  const [showControls, setShowControls] = useState(false);
+  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const handleHistoryClick = (historySrc: string) => {
+  const handleHistoryClick = async (historySrc: string) => {
+    const thumbnail = await generateThumbnail(historySrc);
     setNodes((nds) =>
       nds.map((n) => {
         if (n.id === id) {
-          return { ...n, data: { ...n.data, src: historySrc } };
+          return { ...n, data: { ...n.data, src: historySrc, thumbnail } };
         }
         return n;
       })
@@ -218,26 +262,101 @@ const ImageNode = ({ id, data }: any) => {
     deleteElements({ nodes: [{ id }] });
   };
 
+  const handlePreview = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (data.src) {
+      flowContext?.onPreview(data.src);
+    }
+  };
+
+  const onMouseEnter = () => {
+    // Start 1.5s timer
+    hoverTimeoutRef.current = setTimeout(() => {
+      setShowControls(true);
+    }, 1500);
+  };
+
+  const onMouseLeave = () => {
+    // Clear timer and hide
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    setShowControls(false);
+  };
+
+  const onMouseDown = () => {
+    // If user clicks to drag, immediately cancel the timer and hide controls
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    setShowControls(false);
+  };
+
   const downloadSrc = typeof data?.src === 'string' ? data.src : '';
+  const displaySrc = data.thumbnail || data.src;
 
   return (
-    <div className="bg-white dark:bg-zinc-800 p-2 rounded-xl shadow-md border border-zinc-200 dark:border-zinc-700 relative group min-w-[120px] flex flex-col items-center transition-all hover:shadow-lg hover:border-indigo-500/50">
-      <button onClick={handleDelete} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-md z-50 hover:bg-red-600">
-        <X size={12} />
-      </button>
-      {downloadSrc && (
-        <a
-          href={downloadSrc}
-          download="supioc-ai-art.png"
-          onClick={(e) => e.stopPropagation()}
-          className="absolute -top-2 -left-2 bg-white/90 dark:bg-zinc-900/90 text-zinc-700 dark:text-zinc-200 rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-md z-50 hover:scale-110"
-          title="下载图片"
-        >
-          <Download size={12} />
-        </a>
-      )}
+    <div 
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      onMouseDown={onMouseDown}
+      className="bg-white dark:bg-zinc-800 p-2.5 rounded-2xl shadow-md border border-zinc-200 dark:border-zinc-700 relative group min-w-[200px] flex flex-col items-center transition-all hover:shadow-xl hover:border-indigo-500/50"
+    >
       <Handle type="target" position={Position.Left} className="w-6 h-6 bg-zinc-300 border-4 border-white dark:border-zinc-800 hover:scale-125 hover:bg-zinc-400 transition-transform shadow-md cursor-crosshair" />
-      <img src={data.src} alt="uploaded" className="w-32 h-32 object-cover rounded-lg" />
+      
+      <div className="w-44 h-44 overflow-hidden rounded-xl bg-zinc-100 dark:bg-zinc-900 relative group/img shadow-inner border border-zinc-100 dark:border-zinc-800">
+        <img 
+          src={displaySrc} 
+          alt="uploaded" 
+          className="w-full h-full object-cover transition-transform duration-700 group-hover/img:scale-110" 
+          referrerPolicy="no-referrer"
+        />
+        
+        {/* Overlay with buttons - controlled by showControls state */}
+        <div 
+          className={`absolute inset-0 transition-all cursor-pointer flex flex-col items-center justify-center gap-3 ${
+            showControls ? 'bg-black/40 opacity-100' : 'bg-black/0 opacity-0 pointer-events-none'
+          }`}
+        >
+          {/* Top-right delete button */}
+          <button 
+            onClick={handleDelete} 
+            className="absolute top-2 right-2 bg-red-500/80 backdrop-blur-md text-white rounded-full p-1.5 transition-all hover:bg-red-600 hover:scale-110 active:scale-95 z-10"
+            title="删除"
+          >
+            <X size={14} />
+          </button>
+
+          {/* Bottom actions */}
+          <div className={`absolute bottom-2 left-0 right-0 flex justify-center gap-3 transition-all transform ${showControls ? 'translate-y-0' : 'translate-y-2'}`}>
+            {downloadSrc && (
+              <a
+                href={downloadSrc}
+                download="supioc-ai-art.png"
+                onClick={(e) => e.stopPropagation()}
+                className="bg-white/20 backdrop-blur-md text-white rounded-lg px-3 py-1 text-[10px] font-bold border border-white/30 hover:bg-white/40 transition-colors flex items-center gap-1"
+                title="下载"
+              >
+                <Download size={12} />
+                下载
+              </a>
+            )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handlePreview(e);
+              }}
+              className="bg-white/20 backdrop-blur-md text-white rounded-lg px-3 py-1 text-[10px] font-bold border border-white/30 hover:bg-white/40 transition-colors flex items-center gap-1"
+              title="预览"
+            >
+              <Eye size={12} />
+              预览
+            </button>
+          </div>
+        </div>
+      </div>
       
       {data.history && data.history.length > 1 && (
         <div className="flex gap-1 mt-2">
@@ -248,6 +367,7 @@ const ImageNode = ({ id, data }: any) => {
               alt={`history-${i}`} 
               onClick={() => handleHistoryClick(hSrc)}
               className={`w-8 h-8 object-cover rounded cursor-pointer border-2 ${data.src === hSrc ? 'border-indigo-500' : 'border-transparent hover:border-zinc-400'}`}
+              referrerPolicy="no-referrer"
             />
           ))}
         </div>
@@ -360,6 +480,7 @@ const ProductSuiteDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = (
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [activeGenNodeId, setActiveGenNodeId] = useState<string | null>(null);
   const [isGlobalRunning, setIsGlobalRunning] = useState(false);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
 
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
@@ -384,22 +505,27 @@ const ProductSuiteDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = (
     if (params.targetHandle === 'reference') strokeColor = '#eab308'; // yellow
     else if (params.targetHandle === 'product') strokeColor = '#3b82f6'; // blue
     
-    setEdges((eds) => addEdge({ ...params, animated: true, style: { stroke: strokeColor, strokeWidth: 2 } }, eds));
+    setEdges((eds) => addEdge({ ...params, animated: true, style: { stroke: strokeColor, strokeWidth: 2 } } as any, eds));
   }, [setEdges]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
     
-    Array.from(files).forEach((file, index) => {
+    Array.from(files).forEach((file: any, index) => {
+      if (file.size >= 4 * 1024 * 1024) {
+        toast.error(`图片 ${file.name} 大小超过 4MB，请重新选择。`);
+        return;
+      }
       const reader = new FileReader();
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
         const src = event.target?.result as string;
+        const thumbnail = await generateThumbnail(src);
         const newNode = {
           id: `img-${Date.now()}-${index}`,
           type: 'imageNode',
           position: { x: Math.random() * 100 + 50, y: Math.random() * 100 + 100 },
-          data: { src },
+          data: { src, thumbnail },
         };
         setNodes((nds) => [...nds, newNode]);
       };
@@ -549,6 +675,7 @@ const ProductSuiteDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = (
       });
 
       const resultImage = genResult.dataUrl;
+      const resultThumbnail = await generateThumbnail(resultImage);
 
       if (targetImageNodeId) {
         setNodes(nds => nds.map(n => {
@@ -560,7 +687,7 @@ const ProductSuiteDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = (
             const newHistory = [resultImage, ...currentHistory.filter((src: string) => src !== resultImage)].slice(0, 3);
             return {
               ...n,
-              data: { ...n.data, src: resultImage, history: newHistory }
+              data: { ...n.data, src: resultImage, thumbnail: resultThumbnail, history: newHistory }
             };
           }
           return n;
@@ -577,7 +704,7 @@ const ProductSuiteDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = (
               x: activeNode ? activeNode.position.x + 350 : 400, 
               y: activeNode ? activeNode.position.y : 200 
             },
-            data: { src: resultImage, history: [resultImage] }
+            data: { src: resultImage, thumbnail: resultThumbnail, history: [resultImage] }
           };
 
           const updatedNodes = nds.map(n => {
@@ -714,7 +841,7 @@ const ProductSuiteDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = (
 
       {/* Canvas */}
       <div className="flex-1 w-full h-full pt-[73px]">
-        <FlowContext.Provider value={{ runNode: executeNode }}>
+        <FlowContext.Provider value={{ runNode: executeNode, onPreview: (src) => setPreviewImage(src) }}>
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -736,6 +863,46 @@ const ProductSuiteDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = (
           </ReactFlow>
         </FlowContext.Provider>
       </div>
+
+      {/* Preview Modal */}
+      <AnimatePresence>
+        {previewImage && (
+          <div 
+            className="absolute inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-md p-4 md:p-10"
+            onClick={() => setPreviewImage(null)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="relative max-w-full max-h-full flex items-center justify-center"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button 
+                onClick={() => setPreviewImage(null)}
+                className="absolute -top-12 right-0 md:-right-12 p-2 text-white/70 hover:text-white transition-colors"
+              >
+                <X size={32} />
+              </button>
+              <img 
+                src={previewImage} 
+                alt="Preview" 
+                className="max-w-full max-h-[85vh] object-contain rounded-xl shadow-2xl border border-white/10"
+                referrerPolicy="no-referrer"
+              />
+              <div className="absolute -bottom-12 left-1/2 -translate-x-1/2 flex gap-4">
+                <a 
+                  href={previewImage} 
+                  download="supioc-preview.png"
+                  className="px-6 py-2 bg-white text-zinc-900 rounded-full font-bold flex items-center gap-2 hover:bg-zinc-100 transition-colors shadow-lg"
+                >
+                  <Download size={18} /> 下载原图
+                </a>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Modal */}
       <AnimatePresence>

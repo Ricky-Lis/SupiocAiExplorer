@@ -9,6 +9,7 @@ import { chatWithModel } from '../services/chatApi';
 import { fetchAvailableModels } from '../services/modelsApi';
 import type { ApiModelItem } from '../services/modelsApi';
 import type { CustomModel, ModelOption, LastSelectedModel, ChatProtocol } from '../types';
+import { toast } from 'sonner';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -444,7 +445,7 @@ export const Chat: React.FC<{ apiKey?: string; apiKeyId?: string }> = ({ apiKey,
 
   const startNewSession = () => {
     if (sessions.length >= 3) {
-      alert('最多只能同时开启 3 个会话，请先删除旧会话。');
+      toast.error('最多只能同时开启 3 个会话，请先删除旧会话。');
       return;
     }
     const resolvedModel =
@@ -540,7 +541,7 @@ export const Chat: React.FC<{ apiKey?: string; apiKeyId?: string }> = ({ apiKey,
       return;
     }
     if (sessions.length >= 3) {
-      alert('最多只能同时开启 3 个会话，请先删除旧会话。');
+      toast.error('最多只能同时开启 3 个会话，请先删除旧会话。');
       return;
     }
     const resolvedModel =

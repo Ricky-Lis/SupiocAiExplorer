@@ -1,12 +1,12 @@
 /**
  * 统一聊天 API：支持 OpenAI / Anthropic / Gemini 三种协议
- * 统一使用同源 /api（由本地 dev 代理或线上反向代理转发）
+ * 统一使用 supioc 网关：https://api.supioc.com
  * API Key 使用设置中存储的 key，每次进入页面从本地加载后传入
  */
 
 import type { ChatProtocol } from '../types';
 
-const API_BASE = '/api';
+const API_BASE = 'https://api.supioc.com';
 
 export interface ChatMessage {
   role: 'user' | 'assistant';

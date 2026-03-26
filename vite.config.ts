@@ -20,10 +20,11 @@ export default defineConfig(({mode}) => {
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
       proxy: {
-        // 开发时把同源 /api 代理到 supioc，避免浏览器 CORS
-        '/api': {
+        // 开发时通过代理请求 supioc API，避免 CORS
+        '/api-proxy': {
           target: 'https://api.supioc.com',
           changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/api-proxy/, ''),
         },
       },
     },

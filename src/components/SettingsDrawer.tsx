@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, Sun, Moon, Key, Languages, Plus, Pencil, Trash2, Check, Cloud, UserPlus } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Settings, ApiKeyItem } from '../types';
+import { toast } from 'sonner';
 
 type EditingItem = ApiKeyItem | { id: ''; name: string; key: string; group?: string; source?: 'platform' | 'manual' };
 
@@ -40,7 +41,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({ isOpen, onClose,
       (k) => k.key.trim() === key && k.id !== editing.id
     );
     if (existingByKey) {
-      alert('该 API Key 已存在，请勿重复添加。');
+      toast.error('该 API Key 已存在，请勿重复添加。');
       return;
     }
 
@@ -87,7 +88,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({ isOpen, onClose,
     const userId = settings.userId?.trim();
     const systemToken = settings.systemToken?.trim();
     if (!userId || !systemToken) {
-      alert('请先在下方填写 User ID 和系统令牌后再刷新令牌列表。');
+      toast.error('请先在下方填写 User ID 和系统令牌后再刷新令牌列表。');
       return;
     }
     setIsRefreshing(true);
@@ -95,8 +96,10 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({ isOpen, onClose,
       const headers = new Headers();
       headers.append('new-api-user', userId);
       headers.append('Authorization', systemToken);
-      // 统一走同源 /api，开发环境由 Vite 代理，生产环境由服务器反向代理
-      const tokenUrl = '/api/token/?p=0&size=10';
+      // 开发环境走 Vite 代理，避免 CORS；生产环境直连（若遇 CORS 需服务端配置或自建代理）
+      const tokenUrl = (import.meta as any).env.DEV
+        ? '/api-proxy/api/token/?p=0&size=10'
+        : 'https://api.supioc.com/api/token/?p=0&size=10';
       const res = await fetch(tokenUrl, {
         method: 'GET',
         headers,
@@ -171,9 +174,10 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({ isOpen, onClose,
         apiKeys: mergedKeys,
         activeApiKeyId: nextActiveId,
       });
+      toast.success('刷新令牌列表成功！');
     } catch (e) {
       console.error(e);
-      alert('刷新令牌列表失败，请检查 User ID、系统令牌或网络。');
+      toast.error('刷新令牌列表失败，请检查 User ID、系统令牌或网络。');
     } finally {
       setIsRefreshing(false);
     }
