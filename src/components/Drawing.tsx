@@ -29,41 +29,71 @@ const getCustomDrawModelLabel = (modelId?: string) => {
   return CUSTOM_DRAW_IMAGE_MODELS.find((m) => m.id === modelId)?.label ?? modelId;
 };
 
-/** 生成缩略图辅助函数 */
-const generateThumbnail = (dataUrl: string, maxWidth = 800, maxHeight = 800): Promise<string> => {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      let width = img.width;
-      let height = img.height;
+/**
+ * 将 base64 data URL 转为 Blob URL，显著降低存储在 React 状态中的字符串体积。
+ * Blob URL 只是一个短字符串引用（如 blob:http://...），实际数据由浏览器管理。
+ */
+const dataUrlToBlobUrl = (dataUrl: string): string => {
+  try {
+    const commaIdx = dataUrl.indexOf(',');
+    if (commaIdx === -1) return dataUrl;
+    const meta = dataUrl.slice(0, commaIdx);
+    const mimeMatch = meta.match(/data:([^;]+)/);
+    const mime = mimeMatch?.[1] || 'image/png';
+    const b64 = dataUrl.slice(commaIdx + 1);
+    const bin = atob(b64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return URL.createObjectURL(new Blob([u8], { type: mime }));
+  } catch {
+    return dataUrl;
+  }
+};
 
-      if (width > height) {
-        if (width > maxWidth) {
-          height *= maxWidth / width;
-          width = maxWidth;
-        }
-      } else {
-        if (height > maxHeight) {
-          width *= maxHeight / height;
-          height = maxHeight;
-        }
-      }
+/**
+ * 生成缩略图：节点显示区域仅 176×176 CSS px，考虑 2x 高清屏取 384px 上限。
+ * 使用 createImageBitmap（异步、不阻塞主线程）+ OffscreenCanvas 生成。
+ * 返回 Blob URL 而非 base64 data URL，极大减小 React 状态体积。
+ */
+const generateThumbnail = async (src: string, maxSize = 384): Promise<string> => {
+  try {
+    let bitmap: ImageBitmap;
+    if (src.startsWith('blob:') || src.startsWith('http')) {
+      const resp = await fetch(src);
+      const blob = await resp.blob();
+      bitmap = await createImageBitmap(blob);
+    } else {
+      const commaIdx = src.indexOf(',');
+      if (commaIdx === -1) return src;
+      const meta = src.slice(0, commaIdx);
+      const mimeMatch = meta.match(/data:([^;]+)/);
+      const mime = mimeMatch?.[1] || 'image/png';
+      const b64 = src.slice(commaIdx + 1);
+      const bin = atob(b64);
+      const u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      const blob = new Blob([u8], { type: mime });
+      bitmap = await createImageBitmap(blob);
+    }
 
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(img, 0, 0, width, height);
-      }
-      // 使用 webp 格式以获得更好的清晰度和透明度支持，质量提升至 0.85
-      resolve(canvas.toDataURL('image/webp', 0.85));
-    };
-    img.onerror = () => resolve(dataUrl); // 失败则返回原图
-    img.src = dataUrl;
-  });
+    let { width, height } = bitmap;
+    if (width > height) {
+      if (width > maxSize) { height = Math.round(height * maxSize / width); width = maxSize; }
+    } else {
+      if (height > maxSize) { width = Math.round(width * maxSize / height); height = maxSize; }
+    }
+
+    const offscreen = new OffscreenCanvas(width, height);
+    const ctx = offscreen.getContext('2d');
+    if (!ctx) { bitmap.close(); return src; }
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+
+    const blob = await offscreen.convertToBlob({ type: 'image/webp', quality: 0.88 });
+    return URL.createObjectURL(blob);
+  } catch {
+    return src;
+  }
 };
 
 const CustomDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = ({ apiKey, onBack }) => {
@@ -239,13 +269,13 @@ const CustomDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = ({ apiK
   );
 };
 
-const ImageNode = ({ id, data }: any) => {
+const ImageNode = React.memo(({ id, data }: any) => {
   const { setNodes, deleteElements } = useReactFlow();
   const flowContext = useContext(FlowContext);
   const [showControls, setShowControls] = useState(false);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const handleHistoryClick = async (historySrc: string) => {
+  const handleHistoryClick = useCallback(async (historySrc: string) => {
     const thumbnail = await generateThumbnail(historySrc);
     setNodes((nds) =>
       nds.map((n) => {
@@ -255,44 +285,41 @@ const ImageNode = ({ id, data }: any) => {
         return n;
       })
     );
-  };
+  }, [id, setNodes]);
 
-  const handleDelete = (e: React.MouseEvent) => {
+  const handleDelete = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     deleteElements({ nodes: [{ id }] });
-  };
+  }, [id, deleteElements]);
 
-  const handlePreview = (e: React.MouseEvent) => {
+  const handlePreview = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     if (data.src) {
       flowContext?.onPreview(data.src);
     }
-  };
+  }, [data.src, flowContext]);
 
-  const onMouseEnter = () => {
-    // Start 1.5s timer
+  const onMouseEnter = useCallback(() => {
     hoverTimeoutRef.current = setTimeout(() => {
       setShowControls(true);
     }, 1500);
-  };
+  }, []);
 
-  const onMouseLeave = () => {
-    // Clear timer and hide
+  const onMouseLeave = useCallback(() => {
     if (hoverTimeoutRef.current) {
       clearTimeout(hoverTimeoutRef.current);
       hoverTimeoutRef.current = null;
     }
     setShowControls(false);
-  };
+  }, []);
 
-  const onMouseDown = () => {
-    // If user clicks to drag, immediately cancel the timer and hide controls
+  const onMouseDown = useCallback(() => {
     if (hoverTimeoutRef.current) {
       clearTimeout(hoverTimeoutRef.current);
       hoverTimeoutRef.current = null;
     }
     setShowControls(false);
-  };
+  }, []);
 
   const downloadSrc = typeof data?.src === 'string' ? data.src : '';
   const displaySrc = data.thumbnail || data.src;
@@ -302,7 +329,7 @@ const ImageNode = ({ id, data }: any) => {
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       onMouseDown={onMouseDown}
-      className="bg-white dark:bg-zinc-800 p-2.5 rounded-2xl shadow-md border border-zinc-200 dark:border-zinc-700 relative group min-w-[200px] flex flex-col items-center transition-all hover:shadow-xl hover:border-indigo-500/50"
+      className="bg-white dark:bg-zinc-800 p-2.5 rounded-2xl shadow-md border border-zinc-200 dark:border-zinc-700 relative group min-w-[200px] flex flex-col items-center hover:shadow-xl hover:border-indigo-500/50"
     >
       <Handle type="target" position={Position.Left} className="w-6 h-6 bg-zinc-300 border-4 border-white dark:border-zinc-800 hover:scale-125 hover:bg-zinc-400 transition-transform shadow-md cursor-crosshair" />
       
@@ -310,27 +337,25 @@ const ImageNode = ({ id, data }: any) => {
         <img 
           src={displaySrc} 
           alt="uploaded" 
-          className="w-full h-full object-cover transition-transform duration-700 group-hover/img:scale-110" 
+          className="w-full h-full object-cover" 
+          draggable={false}
           referrerPolicy="no-referrer"
         />
         
-        {/* Overlay with buttons - controlled by showControls state */}
         <div 
-          className={`absolute inset-0 transition-all cursor-pointer flex flex-col items-center justify-center gap-3 ${
+          className={`absolute inset-0 cursor-pointer flex flex-col items-center justify-center gap-3 ${
             showControls ? 'bg-black/40 opacity-100' : 'bg-black/0 opacity-0 pointer-events-none'
           }`}
         >
-          {/* Top-right delete button */}
           <button 
             onClick={handleDelete} 
-            className="absolute top-2 right-2 bg-red-500/80 backdrop-blur-md text-white rounded-full p-1.5 transition-all hover:bg-red-600 hover:scale-110 active:scale-95 z-10"
+            className="absolute top-2 right-2 bg-red-500/80 backdrop-blur-md text-white rounded-full p-1.5 hover:bg-red-600 hover:scale-110 active:scale-95 z-10"
             title="删除"
           >
             <X size={14} />
           </button>
 
-          {/* Bottom actions */}
-          <div className={`absolute bottom-2 left-0 right-0 flex justify-center gap-3 transition-all transform ${showControls ? 'translate-y-0' : 'translate-y-2'}`}>
+          <div className={`absolute bottom-2 left-0 right-0 flex justify-center gap-3 ${showControls ? '' : 'translate-y-2'}`}>
             {downloadSrc && (
               <a
                 href={downloadSrc}
@@ -366,6 +391,7 @@ const ImageNode = ({ id, data }: any) => {
               src={hSrc} 
               alt={`history-${i}`} 
               onClick={() => handleHistoryClick(hSrc)}
+              draggable={false}
               className={`w-8 h-8 object-cover rounded cursor-pointer border-2 ${data.src === hSrc ? 'border-indigo-500' : 'border-transparent hover:border-zinc-400'}`}
               referrerPolicy="no-referrer"
             />
@@ -390,16 +416,16 @@ const ImageNode = ({ id, data }: any) => {
       <Handle type="source" position={Position.Right} className="w-6 h-6 bg-indigo-500 border-4 border-white dark:border-zinc-800 hover:scale-125 hover:bg-indigo-400 transition-transform shadow-md cursor-crosshair" />
     </div>
   );
-};
+});
 
-const GeneratorNode = ({ id, data }: any) => {
+const GeneratorNode = React.memo(({ id, data }: any) => {
   const flowContext = useContext(FlowContext);
   const { deleteElements } = useReactFlow();
 
-  const handleDelete = (e: React.MouseEvent) => {
+  const handleDelete = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     deleteElements({ nodes: [{ id }] });
-  };
+  }, [id, deleteElements]);
 
   return (
     <div className="bg-white dark:bg-zinc-900 p-4 rounded-2xl shadow-xl border-2 border-indigo-500 w-48 transition-all hover:shadow-indigo-500/20 group relative">
@@ -467,7 +493,7 @@ const GeneratorNode = ({ id, data }: any) => {
       <Handle type="source" position={Position.Right} className="w-6 h-6 bg-indigo-500 border-4 border-white dark:border-zinc-900 hover:scale-125 hover:bg-indigo-400 transition-transform shadow-md cursor-crosshair" />
     </div>
   );
-};
+});
 
 const nodeTypes = {
   imageNode: ImageNode,
@@ -508,33 +534,24 @@ const ProductSuiteDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = (
     setEdges((eds) => addEdge({ ...params, animated: true, style: { stroke: strokeColor, strokeWidth: 2 } } as any, eds));
   }, [setEdges]);
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
     
-    Array.from(files).forEach((file: any, index) => {
-      if (file.size >= 4 * 1024 * 1024) {
-        toast.error(`图片 ${file.name} 大小超过 4MB，请重新选择。`);
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        const src = event.target?.result as string;
-        const thumbnail = await generateThumbnail(src);
-        const newNode = {
-          id: `img-${Date.now()}-${index}`,
-          type: 'imageNode',
-          position: { x: Math.random() * 100 + 50, y: Math.random() * 100 + 100 },
-          data: { src, thumbnail },
-        };
-        setNodes((nds) => [...nds, newNode]);
+    Array.from(files).forEach(async (file: File, index) => {
+      const blobUrl = URL.createObjectURL(file);
+      const thumbnail = await generateThumbnail(blobUrl);
+      const newNode = {
+        id: `img-${Date.now()}-${index}`,
+        type: 'imageNode',
+        position: { x: Math.random() * 100 + 50, y: Math.random() * 100 + 100 },
+        data: { src: blobUrl, thumbnail },
       };
-      reader.readAsDataURL(file);
+      setNodes((nds) => [...nds, newNode]);
     });
     
-    // Reset input
     if (fileInputRef.current) fileInputRef.current.value = '';
-  };
+  }, [setNodes]);
 
   const addGeneratorNode = () => {
     const newNode = {
@@ -605,16 +622,29 @@ const ProductSuiteDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = (
         throw new Error('Cancelled');
       }
 
-      const parseDataUrl = (src?: unknown) => {
+      const parseImageSrc = async (src?: unknown): Promise<{ mimeType: string; dataBase64: string } | null> => {
         if (typeof src !== 'string') return null;
-        // 形如：data:image/png;base64,xxxx
-        if (!src.startsWith('data:')) return null;
-        const commaIndex = src.indexOf(',');
-        if (commaIndex === -1) return null;
-        const meta = src.slice(5, commaIndex); // image/png;base64
-        const base64 = src.slice(commaIndex + 1);
-        const mimeType = meta.split(';')[0] || 'image/png';
-        return { mimeType, dataBase64: base64 };
+        if (src.startsWith('data:')) {
+          const commaIndex = src.indexOf(',');
+          if (commaIndex === -1) return null;
+          const meta = src.slice(5, commaIndex);
+          const base64 = src.slice(commaIndex + 1);
+          const mimeType = meta.split(';')[0] || 'image/png';
+          return { mimeType, dataBase64: base64 };
+        }
+        if (src.startsWith('blob:')) {
+          try {
+            const resp = await fetch(src);
+            const blob = await resp.blob();
+            const mimeType = blob.type || 'image/png';
+            const buf = await blob.arrayBuffer();
+            const u8 = new Uint8Array(buf);
+            let binary = '';
+            for (let i = 0; i < u8.length; i++) binary += String.fromCharCode(u8[i]);
+            return { mimeType, dataBase64: btoa(binary) };
+          } catch { return null; }
+        }
+        return null;
       };
 
       const incomingEdges = edgesRef.current.filter((e: any) => e.target === nodeId);
@@ -635,8 +665,10 @@ const ProductSuiteDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = (
           : productSourceNode.data?.resultImage
         : undefined;
 
-      const referenceImage = parseDataUrl(referenceSrc);
-      const productImage = parseDataUrl(productSrc);
+      const [referenceImage, productImage] = await Promise.all([
+        parseImageSrc(referenceSrc),
+        parseImageSrc(productSrc),
+      ]);
 
       const hasReference = !!referenceImage;
       const hasProduct = !!productImage;
@@ -674,7 +706,7 @@ const ProductSuiteDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = (
               : [],
       });
 
-      const resultImage = genResult.dataUrl;
+      const resultImage = dataUrlToBlobUrl(genResult.dataUrl);
       const resultThumbnail = await generateThumbnail(resultImage);
 
       if (targetImageNodeId) {
