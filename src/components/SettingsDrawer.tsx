@@ -3,6 +3,9 @@ import { X, Sun, Moon, Key, Languages, Plus, Pencil, Trash2, Check, Cloud, UserP
 import { motion, AnimatePresence } from 'motion/react';
 import { Settings, ApiKeyItem } from '../types';
 import { toast } from 'sonner';
+import { supiocUrl } from '../config/supiocApi';
+import { resolveChatKeyId, resolveImageKeyId } from '../utils/apiKeySelection';
+import { extractTokenListItems, mapTokenListToApiKeys } from '../utils/supiocTokenList';
 
 type EditingItem = ApiKeyItem | { id: ''; name: string; key: string; group?: string; source?: 'platform' | 'manual' };
 
@@ -15,6 +18,11 @@ interface SettingsDrawerProps {
 
 function generateId() {
   return `key-${Date.now()}`;
+}
+
+/** 文档：GET /api/token/?p=1&size=100（多数网关页码从 1 起，p=0 可能得到空列表） */
+function getSupiocTokenListUrl(): string {
+  return supiocUrl('/api/token/?p=1&size=100');
 }
 
 export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({ isOpen, onClose, settings, setSettings }) => {
@@ -48,10 +56,14 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({ isOpen, onClose,
     if (editing.id === '') {
       const newItem: ApiKeyItem = { id: generateId(), name, key, group, source: 'manual' };
       const nextKeys = [...settings.apiKeys, newItem];
+      const resolvedChatId = resolveChatKeyId(settings);
+      const resolvedImageId = resolveImageKeyId(settings);
       setSettings({
         ...settings,
         apiKeys: nextKeys,
         activeApiKeyId: settings.activeApiKeyId || newItem.id,
+        activeChatApiKeyId: resolvedChatId || newItem.id,
+        activeImageApiKeyId: resolvedImageId || newItem.id,
       });
     } else {
       const nextKeys = settings.apiKeys.map((k) =>
@@ -68,20 +80,36 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({ isOpen, onClose,
 
   const deleteKey = (id: string) => {
     const nextKeys = settings.apiKeys.filter((k) => k.id !== id);
-    const nextActive =
-      settings.activeApiKeyId === id
-        ? (nextKeys[0]?.id ?? '')
-        : settings.activeApiKeyId;
+    const fallbackId = nextKeys[0]?.id ?? '';
+    const nextLegacyActive = settings.activeApiKeyId === id ? fallbackId : settings.activeApiKeyId;
+    const currentChatId = resolveChatKeyId(settings);
+    const currentImageId = resolveImageKeyId(settings);
+    const nextChatActive = currentChatId === id ? fallbackId : currentChatId;
+    const nextImageActive = currentImageId === id ? fallbackId : currentImageId;
     setSettings({
       ...settings,
       apiKeys: nextKeys,
-      activeApiKeyId: nextActive,
+      activeApiKeyId: nextLegacyActive,
+      activeChatApiKeyId: nextChatActive,
+      activeImageApiKeyId: nextImageActive,
     });
     if (editing?.id === id) setEditing(null);
   };
 
-  const setActive = (id: string) => {
-    setSettings({ ...settings, activeApiKeyId: id });
+  const setActiveFor = (target: 'chat' | 'image', id: string) => {
+    if (target === 'chat') {
+      const current = resolveChatKeyId(settings);
+      setSettings({
+        ...settings,
+        activeChatApiKeyId: current === id ? '' : id,
+      });
+      return;
+    }
+    const currentImg = resolveImageKeyId(settings);
+    setSettings({
+      ...settings,
+      activeImageApiKeyId: currentImg === id ? '' : id,
+    });
   };
 
   const refreshFromServer = async () => {
@@ -96,10 +124,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({ isOpen, onClose,
       const headers = new Headers();
       headers.append('new-api-user', userId);
       headers.append('Authorization', systemToken);
-      // 开发环境走 Vite 代理，避免 CORS；生产环境直连（若遇 CORS 需服务端配置或自建代理）
-      const tokenUrl = (import.meta as any).env.DEV
-        ? '/api-proxy/api/token/?p=0&size=10'
-        : 'https://api.supioc.com/api/token/?p=0&size=10';
+      const tokenUrl = getSupiocTokenListUrl();
       const res = await fetch(tokenUrl, {
         method: 'GET',
         headers,
@@ -109,18 +134,13 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({ isOpen, onClose,
         const text = await res.text();
         throw new Error(`请求失败：${res.status} ${text}`);
       }
-      const json = await res.json() as any;
-      const items: any[] = json?.data?.items ?? [];
-      const valid = items.filter(
-        (it) => it && it.status === 1 && (it.DeletedAt === null || it.DeletedAt === undefined)
-      );
-      const apiKeysFromPlatform: ApiKeyItem[] = valid.map((it) => ({
-        id: `platform-${it.id}`,
-        name: it.name || '未命名',
-        key: `sk-${it.key}`,
-        group: it.group || 'default',
-        source: 'platform',
-      }));
+      const json = (await res.json()) as Record<string, unknown>;
+      if (json.success === false) {
+        const msg = typeof json.message === 'string' ? json.message : '接口返回失败';
+        throw new Error(msg);
+      }
+      const rawItems = extractTokenListItems(json);
+      const apiKeysFromPlatform = mapTokenListToApiKeys(rawItems);
 
       // 根据 key 建立平台 key 映射
       const platformByKey = new Map<string, ApiKeyItem>();
@@ -128,8 +148,12 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({ isOpen, onClose,
         platformByKey.set(p.key.trim(), p);
       }
 
-      const prevActive = settings.apiKeys.find((k) => k.id === settings.activeApiKeyId);
-      const prevActiveKey = prevActive?.key.trim() ?? '';
+      const prevLegacyActive = settings.apiKeys.find((k) => k.id === settings.activeApiKeyId);
+      const prevLegacyActiveKey = prevLegacyActive?.key.trim() ?? '';
+      const prevChatActive = settings.apiKeys.find((k) => k.id === resolveChatKeyId(settings));
+      const prevChatActiveKey = prevChatActive?.key.trim() ?? '';
+      const prevImageActive = settings.apiKeys.find((k) => k.id === resolveImageKeyId(settings));
+      const prevImageActiveKey = prevImageActive?.key.trim() ?? '';
 
       const mergedKeys: ApiKeyItem[] = [];
       const seenKeys = new Set<string>();
@@ -159,22 +183,41 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({ isOpen, onClose,
       }
 
       // 计算新的选中项：优先保持相同 id，其次保持相同 key，最后选第一条
-      let nextActiveId = settings.activeApiKeyId;
-      if (!mergedKeys.some((k) => k.id === nextActiveId)) {
-        if (prevActiveKey) {
-          const sameKey = mergedKeys.find((k) => k.key.trim() === prevActiveKey);
-          nextActiveId = sameKey?.id ?? (mergedKeys[0]?.id ?? '');
-        } else {
-          nextActiveId = mergedKeys[0]?.id ?? '';
+      const resolveNextActive = (currentId: string, prevKey: string) => {
+        let nextId = currentId;
+        if (!mergedKeys.some((k) => k.id === nextId)) {
+          if (prevKey) {
+            const sameKey = mergedKeys.find((k) => k.key.trim() === prevKey);
+            nextId = sameKey?.id ?? (mergedKeys[0]?.id ?? '');
+          } else {
+            nextId = mergedKeys[0]?.id ?? '';
+          }
         }
-      }
+        return nextId;
+      };
+
+      const nextLegacyActiveId = resolveNextActive(settings.activeApiKeyId, prevLegacyActiveKey);
+      const nextChatActiveId = resolveNextActive(resolveChatKeyId(settings), prevChatActiveKey);
+      const nextImageActiveId = resolveNextActive(resolveImageKeyId(settings), prevImageActiveKey);
 
       setSettings({
         ...settings,
         apiKeys: mergedKeys,
-        activeApiKeyId: nextActiveId,
+        activeApiKeyId: nextLegacyActiveId,
+        activeChatApiKeyId: nextChatActiveId,
+        activeImageApiKeyId: nextImageActiveId,
       });
-      toast.success('刷新令牌列表成功！');
+      if (rawItems.length === 0) {
+        toast.warning('未从接口解析到任何令牌', {
+          description: '请确认账号下是否已创建令牌；若仍为空，可能是分页参数或返回结构与客户端不一致。',
+        });
+      } else if (apiKeysFromPlatform.length === 0) {
+        toast.warning('接口有数据但未得到可用令牌', {
+          description: '可能已全部删除或处于禁用状态（status=2）。',
+        });
+      } else {
+        toast.success(`已同步 ${apiKeysFromPlatform.length} 条平台令牌`);
+      }
     } catch (e) {
       console.error(e);
       toast.error('刷新令牌列表失败，请检查 User ID、系统令牌或网络。');
@@ -287,20 +330,18 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({ isOpen, onClose,
                           )}
                           {settings.apiKeys.map((item) => {
                             const isPlatform = item.source === 'platform';
+                            const chatSelected = resolveChatKeyId(settings) === item.id;
+                            const imageSelected = resolveImageKeyId(settings) === item.id;
                             return (
                               <div
                                 key={item.id}
                                 className={`flex items-center gap-2 p-3 rounded-xl border transition-all shrink-0 ${
-                                  settings.activeApiKeyId === item.id
+                                  chatSelected || imageSelected
                                     ? 'border-zinc-900 dark:border-white bg-zinc-100 dark:bg-zinc-800'
                                     : 'border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50'
                                 }`}
                               >
-                                <button
-                                  type="button"
-                                  onClick={() => setActive(item.id)}
-                                  className="flex-1 flex flex-col items-start text-left min-w-0"
-                                >
+                                <div className="flex-1 flex flex-col items-start text-left min-w-0">
                                   <span className="flex items-center gap-1.5 w-full">
                                     <span className="text-sm font-medium text-zinc-900 dark:text-white truncate">
                                       {item.name || '未命名'}
@@ -320,7 +361,33 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({ isOpen, onClose,
                                   <span className="text-xs text-zinc-400 truncate w-full mt-0.5">
                                     {`${item.group || 'default'} · ${item.key ? 'sk-••••••' : '未填写'}`}
                                   </span>
-                                </button>
+                                  <div className="flex items-center gap-1.5 mt-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => setActiveFor('chat', item.id)}
+                                      className={`px-2 py-1 rounded-md text-[10px] font-medium transition-colors ${
+                                        chatSelected
+                                          ? 'bg-emerald-600 text-white'
+                                          : 'bg-zinc-200 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-300 dark:hover:bg-zinc-600'
+                                      }`}
+                                      title="设为聊天令牌；再次点击可取消"
+                                    >
+                                      聊天
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setActiveFor('image', item.id)}
+                                      className={`px-2 py-1 rounded-md text-[10px] font-medium transition-colors ${
+                                        imageSelected
+                                          ? 'bg-indigo-600 text-white'
+                                          : 'bg-zinc-200 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-300 dark:hover:bg-zinc-600'
+                                      }`}
+                                      title="设为生图令牌；再次点击可取消"
+                                    >
+                                      生图
+                                    </button>
+                                  </div>
+                                </div>
                                 <button
                                   type="button"
                                   onClick={() => startEdit(item)}

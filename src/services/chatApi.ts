@@ -5,8 +5,7 @@
  */
 
 import type { ChatProtocol } from '../types';
-
-const API_BASE = 'https://api.supioc.com';
+import { supiocUrl } from '../config/supiocApi';
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -33,7 +32,7 @@ async function requestOpenAI(options: ChatRequestOptions): Promise<string> {
     openaiMessages.push({ role: m.role, content: m.content });
   });
 
-  const res = await fetch(`${API_BASE}/v1/chat/completions`, {
+  const res = await fetch(supiocUrl('/v1/chat/completions'), {
     method: 'POST',
     headers: {
       Accept: 'application/json',
@@ -54,10 +53,38 @@ async function requestOpenAI(options: ChatRequestOptions): Promise<string> {
     throw new Error(`OpenAI API 错误: ${res.status} ${err}`);
   }
 
-  const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  const text = data.choices?.[0]?.message?.content;
-  if (text == null) throw new Error('OpenAI 返回格式异常');
+  const data = (await res.json()) as unknown;
+  const text = extractOpenAiChatCompletionText(data);
+  if (!text) throw new Error('OpenAI 返回格式异常：未解析到 assistant 文本');
   return text;
+}
+
+/**
+ * 兼容 OpenAI 及多数兼容网关：choices[0].message.content 为 string，
+ * 或为多模态片段数组 [{type:'text',text:'...'}]。
+ */
+function extractOpenAiChatCompletionText(data: unknown): string {
+  if (data == null || typeof data !== 'object') return '';
+  const choices = (data as { choices?: unknown[] }).choices;
+  const first = choices?.[0];
+  if (first == null || typeof first !== 'object') return '';
+  const message = (first as { message?: unknown }).message;
+  if (message == null || typeof message !== 'object') return '';
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part: unknown) => {
+        if (typeof part === 'string') return part;
+        if (part != null && typeof part === 'object') {
+          const p = part as { type?: string; text?: string };
+          if (typeof p.text === 'string') return p.text;
+        }
+        return '';
+      })
+      .join('');
+  }
+  return '';
 }
 
 /** Anthropic 格式：POST /v1/messages（supioc） */
@@ -76,7 +103,7 @@ async function requestAnthropic(options: ChatRequestOptions): Promise<string> {
   };
   if (systemInstruction) body.system = systemInstruction;
 
-  const res = await fetch(`${API_BASE}/v1/messages`, {
+  const res = await fetch(supiocUrl('/v1/messages'), {
     method: 'POST',
     headers: {
       Accept: 'application/json',
@@ -93,9 +120,9 @@ async function requestAnthropic(options: ChatRequestOptions): Promise<string> {
   }
 
   const data = (await res.json()) as { content?: Array<{ type: string; text?: string }> };
-  const block = data.content?.find((c) => c.type === 'text');
-  const text = block?.text;
-  if (text == null) throw new Error('Anthropic 返回格式异常');
+  const parts = data.content?.filter((c) => c.type === 'text' && c.text) ?? [];
+  const text = parts.map((c) => c.text ?? '').join('');
+  if (!text) throw new Error('Anthropic 返回格式异常');
   return text;
 }
 
@@ -129,7 +156,9 @@ async function requestGemini(options: ChatRequestOptions): Promise<string> {
     };
   }
 
-  const res = await fetch(`${API_BASE}/v1beta/models/${encodeURIComponent(modelId)}:generateContent`, {
+  const res = await fetch(
+    supiocUrl(`/v1beta/models/${encodeURIComponent(modelId)}:generateContent`),
+    {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -146,7 +175,10 @@ async function requestGemini(options: ChatRequestOptions): Promise<string> {
   const data = (await res.json()) as {
     candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
   };
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  const parts = data.candidates?.[0]?.content?.parts ?? [];
+  const text = parts
+    .map((p) => (typeof p?.text === 'string' ? p.text : ''))
+    .join('');
   if (!text) throw new Error('Gemini 未返回文本');
   return text;
 }

@@ -3,7 +3,7 @@
  * 返回值为 data URL，直接用于 <img src="..."/>
  */
 
-const API_BASE = 'https://api.supioc.com';
+import { supiocUrl } from '../config/supiocApi';
 
 export type GeminiImageResolution = '1K' | '2K' | '4K';
 export type GeminiAspectRatio = '1:1' | '2:3' | '3:2' | '3:4' | '4:3' | '9:16' | '16:9' | '21:9';
@@ -43,7 +43,9 @@ export async function generateGeminiImage(options: GeminiImageGenerateOptions): 
     })),
   ];
 
-  const res = await fetch(`${API_BASE}/v1beta/models/${encodeURIComponent(modelId)}:generateContent`, {
+  const res = await fetch(
+    supiocUrl(`/v1beta/models/${encodeURIComponent(modelId)}:generateContent`),
+    {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,

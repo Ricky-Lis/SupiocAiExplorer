@@ -3,7 +3,7 @@
  * 支持缓存与定时刷新
  */
 
-const MODELS_API_URL = 'https://api.supioc.com/v1/models';
+import { supiocUrl } from '../config/supiocApi';
 
 /** 接口返回的单个模型项 */
 export interface ApiModelItem {
@@ -52,7 +52,7 @@ export async function fetchAvailableModels(
   }
 
   const token = apiKey?.trim() ? (apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`) : '';
-  const res = await fetch(MODELS_API_URL, {
+  const res = await fetch(supiocUrl('/v1/models'), {
     method: 'GET',
     headers: {
       Authorization: token,

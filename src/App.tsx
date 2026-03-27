@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, type ReactNode } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { Home } from './components/Home';
@@ -7,7 +7,7 @@ import { Drawing } from './components/Drawing';
 import { VideoPage } from './components/Video';
 import { Agent } from './components/Agent';
 import { PageType, Settings } from './types';
-import { motion, AnimatePresence } from 'motion/react';
+import { resolveChatKeyId, resolveImageKeyId } from './utils/apiKeySelection';
 import { Toaster } from 'sonner';
 
 export default function App() {
@@ -38,6 +38,12 @@ export default function App() {
     return {
       apiKeys: Array.isArray(parsed.apiKeys) ? parsed.apiKeys : [],
       activeApiKeyId: typeof parsed.activeApiKeyId === 'string' ? parsed.activeApiKeyId : '',
+      ...(typeof parsed.activeChatApiKeyId === 'string'
+        ? { activeChatApiKeyId: parsed.activeChatApiKeyId }
+        : {}),
+      ...(typeof parsed.activeImageApiKeyId === 'string'
+        ? { activeImageApiKeyId: parsed.activeImageApiKeyId }
+        : {}),
       userId: typeof parsed.userId === 'string' ? parsed.userId : '',
       systemToken: typeof parsed.systemToken === 'string' ? parsed.systemToken : '',
       theme: parsed.theme === 'dark' ? 'dark' : 'light',
@@ -54,16 +60,22 @@ export default function App() {
     }
   }, [settings]);
 
-  const renderPage = () => {
-    const currentKey = settings.apiKeys.find((k) => k.id === settings.activeApiKeyId)?.key ?? '';
-    switch (activePage) {
-      case 'home': return <Home />;
-      case 'chat': return <Chat apiKey={currentKey} apiKeyId={settings.activeApiKeyId} />;
-      case 'drawing': return <Drawing apiKey={currentKey} />;
-      case 'video': return <VideoPage />;
-      case 'agent': return <Agent />;
-      default: return <Home />;
-    }
+  const chatKeyId = resolveChatKeyId(settings);
+  const imageKeyId = resolveImageKeyId(settings);
+  const chatKey = settings.apiKeys.find((k) => k.id === chatKeyId)?.key ?? '';
+  const imageKey = settings.apiKeys.find((k) => k.id === imageKeyId)?.key ?? '';
+
+  const pageWrap = (page: PageType, node: ReactNode) => {
+    const visible = activePage === page;
+    const scrollPages: PageType[] = ['home', 'video', 'agent'];
+    const outerClass = visible
+      ? `h-full min-h-0 flex flex-col ${scrollPages.includes(page) ? 'overflow-y-auto' : 'overflow-hidden'}`
+      : 'hidden';
+    return (
+      <div className={outerClass} aria-hidden={!visible}>
+        {node}
+      </div>
+    );
   };
 
   return (
@@ -75,19 +87,12 @@ export default function App() {
         onOpenSettings={() => setIsSettingsOpen(true)} 
       />
       
-      <main className="flex-1 overflow-y-auto relative z-10">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={activePage}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="h-full"
-          >
-            {renderPage()}
-          </motion.div>
-        </AnimatePresence>
+      <main className="flex-1 min-h-0 overflow-hidden relative z-10 flex flex-col">
+        {pageWrap('home', <Home />)}
+        {pageWrap('chat', <Chat apiKey={chatKey} apiKeyId={chatKeyId} />)}
+        {pageWrap('drawing', <Drawing apiKey={imageKey} chatApiKey={chatKey} />)}
+        {pageWrap('video', <VideoPage />)}
+        {pageWrap('agent', <Agent />)}
       </main>
 
       <SettingsDrawer 

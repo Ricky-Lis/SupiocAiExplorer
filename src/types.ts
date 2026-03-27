@@ -14,8 +14,16 @@ export interface ApiKeyItem {
 export interface Settings {
   /** 多个 API Key，支持添加/编辑名称和 key */
   apiKeys: ApiKeyItem[];
-  /** 当前选中的 API Key 的 id */
+  /** 兼容旧版：历史上的“单一选中 API Key” */
   activeApiKeyId: string;
+  /**
+   * 聊天专用令牌 id。
+   * - 缺省：回退到 activeApiKeyId
+   * - 空字符串：用户已取消聊天令牌，聊天页不再使用 Key，直至重新选择
+   */
+  activeChatApiKeyId?: string;
+  /** 生图专用令牌 id，语义同 activeChatApiKeyId */
+  activeImageApiKeyId?: string;
   /** Supioc 用户 ID，用于自动刷新令牌 */
   userId?: string;
   /** Supioc 系统令牌（系统令牌/后端令牌） */

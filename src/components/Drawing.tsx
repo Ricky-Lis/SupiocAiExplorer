@@ -6,6 +6,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateGeminiImage } from '../services/imageGenApi';
+import { chatWithModel } from '../services/chatApi';
+import { resolveDefaultChatModelForPolish } from '../utils/chatDefaultModel';
 import { ReactFlow, Background, Controls, addEdge, Handle, Position, useNodesState, useEdgesState, Connection, Edge, useReactFlow, SelectionMode } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { toast } from 'sonner';
@@ -500,7 +502,18 @@ const nodeTypes = {
   generatorNode: GeneratorNode,
 };
 
-const ProductSuiteDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = ({ apiKey, onBack }) => {
+const POLISH_SYSTEM_INSTRUCTION =
+  '你是 AI 绘图提示词编辑。用户会提供用于文生图/图生图的简短描述。润色目标：在「不篡改用户本意」的前提下，让提示词更可执行。' +
+  '重要约束：不要擅自添加用户未提及的具体物象或设定（例如用户只说「起飞的牛」，不要自行规定「翅膀」「金色」「品种」等；若需表现升空，可用「腾空、跃起、悬浮」等中性词，或用「或」并列两种合理解读，避免锁死成单一奇幻设定）。' +
+  '允许补充的内容限于：整体氛围、通用光线与明暗（如侧光、柔和逆光）、中性构图词（如远景、低机位仰视）、画风一词（写实/插画等，用户未指定时选一种常见默认）。' +
+  '输出语言与用户主要输入语言一致。只输出润色后的一段提示词正文，不要解释、不要引号、不要 Markdown、不要前缀。';
+
+const ProductSuiteDrawing: React.FC<{
+  apiKey?: string;
+  /** 聊天页默认模型所用 API Key（与绘图令牌分离时使用） */
+  chatApiKey?: string;
+  onBack: () => void;
+}> = ({ apiKey, chatApiKey, onBack }) => {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -523,8 +536,46 @@ const ProductSuiteDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = (
   const [resolution, setResolution] = useState<'1K' | '2K' | '4K'>('2K');
   const [aspectRatio, setAspectRatio] = useState('1:1');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isPolishing, setIsPolishing] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handlePolishPrompt = async () => {
+    const raw = productInfo.trim();
+    if (!raw) {
+      toast.error('请先填写提示词或商品信息，再使用 AI 润色。');
+      return;
+    }
+    const key = chatApiKey?.trim();
+    if (!key) {
+      toast.error('请先在设置中配置「聊天」所用 API Key。');
+      return;
+    }
+    setIsPolishing(true);
+    try {
+      const { modelId, protocol } = await resolveDefaultChatModelForPolish();
+      const polished = await chatWithModel({
+        apiKey: key,
+        protocol,
+        modelId,
+        messages: [{ role: 'user', content: raw }],
+        systemInstruction: POLISH_SYSTEM_INSTRUCTION,
+        temperature: 0.5,
+      });
+      const next = polished.trim();
+      if (!next) {
+        toast.error('模型未返回有效内容，请重试。');
+        return;
+      }
+      setProductInfo(next);
+      toast.success('提示词已润色');
+    } catch (e) {
+      console.error(e);
+      toast.error(e instanceof Error ? e.message : '润色失败，请检查聊天模型与网络。');
+    } finally {
+      setIsPolishing(false);
+    }
+  };
 
   const onConnect = useCallback((params: Connection | Edge) => {
     let strokeColor = '#6366f1'; // default indigo
@@ -958,13 +1009,32 @@ const ProductSuiteDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = (
               <div className="p-6 space-y-6 overflow-y-auto max-h-[60vh]">
                 {/* Product Info */}
                 <div className="space-y-3">
-                  <label className="text-sm font-bold text-zinc-800 dark:text-zinc-200">提示词 / 商品信息</label>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <label className="text-sm font-bold text-zinc-800 dark:text-zinc-200">提示词 / 商品信息</label>
+                    <button
+                      type="button"
+                      onClick={handlePolishPrompt}
+                      disabled={isPolishing}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 disabled:opacity-50 disabled:pointer-events-none transition-colors"
+                      title="使用聊天页默认模型润色当前提示词"
+                    >
+                      {isPolishing ? (
+                        <Loader2 size={14} className="animate-spin shrink-0" />
+                      ) : (
+                        <Sparkles size={14} className="shrink-0" />
+                      )}
+                      AI 润色
+                    </button>
+                  </div>
                   <textarea
                     value={productInfo}
                     onChange={(e) => setProductInfo(e.target.value)}
                     placeholder="描述您想要的场景、风格、光影等..."
                     className="w-full h-32 p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700 text-sm outline-none focus:ring-2 focus:ring-indigo-500/50 resize-none dark:text-white"
                   />
+                  <p className="text-[11px] text-zinc-400 leading-snug">
+                    润色使用「聊天」令牌与本地保存的默认聊天模型（与聊天页「将当前选中设为默认模型」一致）。
+                  </p>
                 </div>
 
                 {/* Model Selection */}
@@ -1045,7 +1115,13 @@ const ProductSuiteDrawing: React.FC<{ apiKey?: string; onBack: () => void }> = (
   );
 };
 
-export const Drawing: React.FC<{ apiKey?: string }> = ({ apiKey }) => {
+const MAX_DRAWING_PROJECTS = 3;
+
+/** 单个绘图项目：hub / 自定义 / 商品套图 全流程状态（与 App 页签配合，切换侧边栏不卸载） */
+const DrawingProjectWorkspace: React.FC<{ apiKey?: string; chatApiKey?: string }> = ({
+  apiKey,
+  chatApiKey,
+}) => {
   const [currentView, setCurrentView] = useState<'hub' | 'custom' | 'product-suite'>('hub');
 
   const features = [
@@ -1146,10 +1222,100 @@ export const Drawing: React.FC<{ apiKey?: string }> = ({ apiKey }) => {
             transition={{ duration: 0.2 }}
             className="h-full"
           >
-            <ProductSuiteDrawing apiKey={apiKey} onBack={() => setCurrentView('hub')} />
+            <ProductSuiteDrawing apiKey={apiKey} chatApiKey={chatApiKey} onBack={() => setCurrentView('hub')} />
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+};
+
+interface DrawingProjectMeta {
+  id: string;
+  title: string;
+}
+
+export const Drawing: React.FC<{ apiKey?: string; chatApiKey?: string }> = ({ apiKey, chatApiKey }) => {
+  const [projects, setProjects] = useState<DrawingProjectMeta[]>([{ id: 'draw-default', title: '项目 1' }]);
+  const [activeProjectId, setActiveProjectId] = useState('draw-default');
+
+  const addProject = () => {
+    if (projects.length >= MAX_DRAWING_PROJECTS) {
+      toast.error(`最多同时开启 ${MAX_DRAWING_PROJECTS} 个绘图项目`);
+      return;
+    }
+    const id = `draw-${Date.now()}`;
+    setProjects((prev) => [...prev, { id, title: `项目 ${prev.length + 1}` }]);
+    setActiveProjectId(id);
+  };
+
+  const deleteProject = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (projects.length <= 1) {
+      toast.error('至少保留 1 个绘图项目');
+      return;
+    }
+    const next = projects.filter((p) => p.id !== id);
+    setProjects(next);
+    if (activeProjectId === id) {
+      setActiveProjectId(next[0]?.id ?? '');
+    }
+  };
+
+  return (
+    <div className="h-full w-full flex flex-col min-h-0 bg-zinc-50 dark:bg-zinc-950">
+      <div className="flex-shrink-0 flex flex-wrap items-center gap-2 px-3 sm:px-4 py-2 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/90">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 whitespace-nowrap">
+          项目 ({projects.length}/{MAX_DRAWING_PROJECTS})
+        </span>
+        <div className="flex flex-wrap items-center gap-1.5 flex-1 min-w-0">
+          {projects.map((p) => (
+            <div key={p.id} className="flex items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => setActiveProjectId(p.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-colors truncate max-w-[10rem] ${
+                  activeProjectId === p.id
+                    ? 'bg-zinc-900 dark:bg-white text-white dark:text-zinc-900'
+                    : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+                }`}
+              >
+                {p.title}
+              </button>
+              {projects.length > 1 && (
+                <button
+                  type="button"
+                  onClick={(e) => deleteProject(p.id, e)}
+                  className="p-1 rounded-md text-zinc-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 shrink-0"
+                  title="关闭该项目"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          ))}
+          {projects.length < MAX_DRAWING_PROJECTS && (
+            <button
+              type="button"
+              onClick={addProject}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-zinc-300 dark:border-zinc-600 text-xs font-medium text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 shrink-0"
+            >
+              <Plus size={14} /> 新项目
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="flex-1 min-h-0 relative">
+        {projects.map((p) => (
+          <div
+            key={p.id}
+            className={activeProjectId === p.id ? 'h-full w-full overflow-hidden' : 'hidden'}
+            aria-hidden={activeProjectId !== p.id}
+          >
+            <DrawingProjectWorkspace apiKey={apiKey} chatApiKey={chatApiKey} />
+          </div>
+        ))}
+      </div>
     </div>
   );
 };
